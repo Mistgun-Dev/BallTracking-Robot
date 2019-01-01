@@ -1,9 +1,10 @@
 #include <ZumoMotors.h>
 #include <SPI.h>  
 #include <Pixy.h>
-#include <Pushbutton.h> 
 
-/* Redéfinition des intitulés des types de données */
+ZumoMotors motors;
+Pixy pixy;
+
 typedef unsigned short UINT16;
 typedef unsigned char  UINT8;
 typedef signed char    INT8;
@@ -11,82 +12,75 @@ typedef signed short   INT16;
 typedef unsigned int   UINT32;
 typedef signed int     INT32;
 typedef unsigned char  BYTE;
-
-#define PALET_BLEU  1
-#define PALET_ROUGE 2
-#define PALET_VERT  3
-#define RIGHT       4                           // Coté droit
-#define LEFT        5                           // Coté gauche
-#define FRONT       6                           // Milieu (devant)
-
-ZumoMotors motors;                              // Instanciation de l'objet moteur gérant les déplacement du moteur
-Pushbutton button(ZUMO_BUTTON);                 // Boutton situé sur la carte ZumoShield 
-Pixy pixy;                                      // Objet gérant la caméra Pixy
    
-INT32  MOTOR_s32MotorSpeed = 90;               // Vitesse du moteur
-INT32  MOTOR_s32MotorSpeedRotate = 0;           // Vitesse de rotation du moteur pour aller a gauche ou a droite
-UINT16 PIXY_u16CameraWidth= 319;                // Taille en longueur de la résolution Pixy
-UINT16 PIXY_u16CameraHeight = 199;              // Taille en hauteur de la résolution Pixy
-float  f32SpeedRotationRatio = 1.5;             // Coeff Multiplicateur pour calculer la vitesse de rotation en fonction de la position de la allse dans le champ de vision
-UINT16 u16MinDistanceObject = 20;               // Le robot s'arret lorsque cette distance le sépare de l'objet cible (cm)
-float  f32Distance = -1;                        // Distance récupéré par l'ultrason
-UINT8  PIXY_u8LastDetectObject = -1;            // Derniere position connue de l'objet avant qu'il ne disparaisse du champ de vision   
-bool   bObstacleIsFounded = false;              // Booléen servant a savoir si un obstacle est en face de nous ou pas
-bool   bSearchDistanceMin = true;               // Booléen servant a activer ou non la recherche du palet le plus proche
-UINT8  u8foundedSignature[100];                 // Tableau qui contient les signatures trouvés lors de la recherche du palet le plus proche
-int nbSignatureFounded = 0;                     // Nombre de signature trouvée lors de la recherche du palet le plus proche
-bool  bObjectIsInFront = false;
-UINT16 PIXY_au16PixyMiddleInterval[2] =         // Interval dans lequel l'objet cible est considéré comme étant au milieu de champ de vision
-            { (PIXY_u16CameraWidth/2) + 30 ,    
-            (PIXY_u16CameraWidth/2) - 30 };
+INT32  MOTOR_s32MotorSpeed = 210;             // Vitesse du moteur
+INT32  MOTOR_s32MotorSpeedRotate = 0;         // Vitesse de rotation du moteur pour aller a gauche ou a droite
+UINT16 PIXY_u16ViewWidth= 319;                // Taille en longueur de la résolution Pixy
+UINT16 PIXY_u16ViewHeight = 199;              // Taille en hauteur de la résolution Pixy
+UINT16 PIXY_au16PixyMiddleInterval[2] = { (PIXY_u16ViewWidth/2) + 30 ,
+                                          (PIXY_u16ViewWidth/2) - 30 };
+UINT8 PIXY_u8LastDetectObject = -1;
+#define RIGHT       0
+#define LEFT        1
+#define FRONT       2   
+#define calDistance 20 //8 //in inches 24inches or 2 foot
+int calWidth = 111; //Calibrated width reading
+int calHeight = 107; //Calibrated height reading
+int focalLengthWidth;  //calculated focal length for width
+int focalLengthHeight; //calculated focal length for height
+float widthOfObject = 9; //inches (3.75 inches) real size of your object
+float heightOfObject = 9; //inches (2.5 inches) real size of your object
+float distanceWidth;   //calculated distance based on the width of the object
+float distanceHeight;  //calculated distance based on the height of the object 
+float avg;
+int pixelsWidth;   //read by the camera
+int pixelsHeight; //read by the camera
+float inches,feet;
 
-const byte ULTRASON_TRIGGER_PIN = A1;           // Broche TRIGGER de l'ultrason
-const byte ULTRASON_ECHO_PIN = A4;               // Broche ECHO de l'ultrason
-const unsigned long MEASURE_TIMEOUT = 25000UL;  // Timeout de l'ulstrason, 25ms = ~8m à 340m/s
-const float ULTRASON_SOUND_SPEED = 340.0/1000;  // Vitesse du son dans l'air pour l'ultrason
-
-void setup() 
+UINT32 u32GetDistanceObj(UINT16 u16objID)
 {
-  Serial.begin(9600);
-  Serial.print("Starting...\n");
+  pixelsWidth = pixy.blocks[u16objID].width;
+  pixelsHeight = pixy.blocks[u16objID].height;
+  distanceWidth = (widthOfObject * focalLengthWidth) / pixelsWidth;
+  distanceHeight = (heightOfObject * focalLengthHeight) / pixelsHeight;
+  avg = (distanceWidth + distanceHeight)/2;
+  avg = round(avg);
+  feet = avg/12;
   
-  pixy.init();
-  ULTRASON_vdInit();
-  MOTOR_vdStop(-1);
-
-  memset(u8foundedSignature, 0, 100);
+  return avg;
 }
 
-void ULTRASON_vdInit()
+UINT32 u32GetSpeedRotation(UINT16 u16objectX)
 {
-    pinMode(ULTRASON_TRIGGER_PIN, OUTPUT);
-    digitalWrite(ULTRASON_TRIGGER_PIN, LOW);
-    pinMode(ULTRASON_ECHO_PIN, INPUT);
-}
-
-
-float ULTRASON_f32GetDistance()
-{
-    digitalWrite(ULTRASON_TRIGGER_PIN, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(ULTRASON_TRIGGER_PIN, LOW);
-
-    long measure = pulseIn(ULTRASON_ECHO_PIN, HIGH, MEASURE_TIMEOUT);
-    
-    float distance_mm = measure / 2.0 * ULTRASON_SOUND_SPEED;
-
-    return distance_mm / 10.0;
-}
-
-INT32 s32GetSpeedRotation(UINT16 u16objectX)
-{
-   INT32 s32Res = (PIXY_u16CameraWidth / 2) - u16objectX;
-   s32Res = abs(s32Res) * f32SpeedRotationRatio;
-   
-   if(s32Res > PIXY_u16CameraWidth * 2)
+   INT32 s32Res = (PIXY_u16ViewWidth / 2) - u16objectX;
+   s32Res = abs(s32Res) * 2.5;
+   static int i;
+   /*
+   if(i++%50 == 0)
+   {
+    Serial.print("res =  ");
+    Serial.print(s32Res);
+    Serial.print(" abs : ");
+    Serial.print(s32Res);
+    Serial.print("\n");
+   }
+*/
+   if(s32Res > PIXY_u16ViewWidth * 2)
     return 0;
      
    return s32Res;
+}
+
+void setup() 
+{
+  focalLengthWidth = (calWidth * calDistance) / widthOfObject;
+  focalLengthHeight = (calHeight * calDistance) / heightOfObject;
+
+  
+  Serial.begin(9600);
+  Serial.print("Starting...\n");
+  pixy.init();
+  MOTOR_vdStop(-1);
 }
 
 void MOTOR_vdStop(INT32 u32Delay)
@@ -99,172 +93,103 @@ void MOTOR_vdStop(INT32 u32Delay)
    delay(u32Delay);
 }
 
-//void MOTOR_vdMoveForward(INT32 speedLeft, INT32 speedRight) { motors.setSpeeds(speedLeft , speedRight);  }
-void MOTOR_vdMoveForward(INT32 speed)   { motors.setSpeeds(  speed ,   speed);  }
-void MOTOR_vdRotateRight(INT32 speed)   { motors.setSpeeds(  speed  , -speed);  }
-void MOTOR_vdRotateLeft(INT32 speed)    { motors.setSpeeds( -speed  ,  speed ); }
-void MOTOR_vdMoveBack(INT32 speed)      { motors.setSpeeds( -speed  , -speed);  }
-
-
-void vdTrackObject(UINT16 u16objectX, UINT16 u16objectY)
+void MOTOR_vdMoveForward(INT32 speedLeft, INT32 speedRight)
 {
-  //Si l'objet se trouve dans le coin gauche du champ de vision de la caméra, on effectue une rotation à gauche
+   motors.setSpeeds(speedLeft , speedRight);
+}
+
+void MOTOR_vdRotateRight(INT32 speed)
+{
+   motors.setSpeeds(speed, -speed);
+}
+
+void MOTOR_vdRotateLeft(INT32 speed)
+{
+   motors.setSpeeds(-speed , speed);
+}
+
+void MOTOR_vdMoveBack(INT32 speed)
+{
+   motors.setSpeeds(-speed , -speed);
+}
+
+void vdTrackObject(UINT16 u16objID, UINT16 u16objectX, UINT16 u16objectY, UINT16 u16ObjectWidth, UINT16 u16ObjectHeight)
+{
+  UINT32 u32DistanceObj = u32GetDistanceObj(u16objID);
+  MOTOR_s32MotorSpeedRotate = (INT32)u32GetSpeedRotation(u16objectX);
+  UINT8  u8DistanceMin = 18;
+
+  
+  //Si l'objet se trouve dans le coin gauche du champ de vision de la caméra, on avance en tournant à gauche
   if(u16objectX <= PIXY_au16PixyMiddleInterval[0] && u16objectX <= PIXY_au16PixyMiddleInterval[1])
   {
-    MOTOR_vdRotateLeft(MOTOR_s32MotorSpeedRotate);
+    if(u32DistanceObj > u8DistanceMin)
+      MOTOR_vdMoveForward(MOTOR_s32MotorSpeed, MOTOR_s32MotorSpeedRotate);
+    else
+      MOTOR_vdRotateLeft(MOTOR_s32MotorSpeedRotate);
+
+    PIXY_u8LastDetectObject = LEFT;
   }
-  
-  //Si l'objet se trouve dans le coin droit du champ de vision de la caméra, on effectue une rotation à droite
+  //Si l'objet se trouve dans le coin droit du champ de vision de la caméra, on avance en tournant à droite
   else if(u16objectX >= PIXY_au16PixyMiddleInterval[0] && u16objectX >= PIXY_au16PixyMiddleInterval[1])
   {
-    MOTOR_vdRotateRight(MOTOR_s32MotorSpeedRotate);
-   
-  }
+    if(u32DistanceObj > u8DistanceMin)
+      MOTOR_vdMoveForward(MOTOR_s32MotorSpeedRotate , MOTOR_s32MotorSpeed);
+    else
+      MOTOR_vdRotateRight(MOTOR_s32MotorSpeedRotate);
 
-  //Si aucun obstacle n'est façe à nous, et que l'objet se trouve au milieu du champ de vision de la caméra, on récupere sa distance
+    PIXY_u8LastDetectObject = RIGHT;
+  }
   else
   {
-    // Si l'objet est loin devant nous on peut avancer
-    if(f32Distance > u16MinDistanceObject && f32Distance != 0)
-    {       
-      MOTOR_vdMoveForward(MOTOR_s32MotorSpeed * 2 );
+    if(u32DistanceObj > u8DistanceMin)
+    {
+      MOTOR_vdMoveForward(MOTOR_s32MotorSpeed , MOTOR_s32MotorSpeed);
+      PIXY_u8LastDetectObject = FRONT;
     }
-    
-    // Si l'objet est trop près de nous on doit reculer
-    else if(f32Distance < u16MinDistanceObject && f32Distance > u16MinDistanceObject - 5 && f32Distance != 0)
-      MOTOR_vdMoveBack(MOTOR_s32MotorSpeed); 
-      
-    // Sinon, si l'objet est bien devant nous dans l'intervalle donné, on arrête le moteur
     else
       MOTOR_vdStop(-1);      
   }
 }
 
-bool bSignatureWasFounded(int signature, int nbSig)
-{
-  int i;
-  
-  if(nbSig == 0)
-  return false;
-  
-  for(i=0 ; i<nbSig ; i++)
-    if(u8foundedSignature[i] == signature)
-      return true;
-
-   return false;
-}
-
-unsigned char u8ChooseNearObject(UINT8 *u8TabSignature, UINT8 u8Size)
-{
-  int i;
-  int min = u8TabSignature[0];
-  
-  for(i=1 ; i<u8Size ; i++)
-  {
-    if(min < u8TabSignature[i])
-      min = i;
-  }
-
-  return min;
-}
-
 void loop() 
 {
+  static int i = 0;
+  int j;
   uint16_t blocks;
   char buf[32]; 
-  int signature;
-  static int time_now = 0;
-  int u8NearObject = 0;
-
   
   //Récuperer le nombre de blocks détécté
   blocks = pixy.getBlocks();
 
-  if(bSearchDistanceMin == true && bObjectIsInFront == false)
-    MOTOR_vdRotateRight(MOTOR_s32MotorSpeed);
-
   //Si il y a des blocks, on les traites
-  if(blocks == true)
+  if(blocks)
   {
-    for (int j=0; j<blocks; j++)
-    {
-      if(bSearchDistanceMin == true && bObjectIsInFront == false)
-      {  
-        signature = pixy.blocks[j].signature;
-
-          // Si l'on est déja tombé sur cette signature, et que l'on retombe dessus, alors c'est qu'on a fait un tour complet.
-          /*
-          if(signature == u8foundedSignature[0])
-          {
-            u8NearObject = u8ChooseNearObject(u8foundedSignature, nbSignatureFounded);
-            Serial.print("Le palet le plus proche est : ");
-            if(u8NearObject == PALET_BLEU) Serial.println("le BLEU");
-            else if(u8NearObject == PALET_ROUGE) Serial.println("le ROUGE");
-            else if(u8NearObject == PALET_VERT) Serial.println("le VERT");
-            bSearchDistanceMin = false;
-
-            break;
-          }
-          */
-        if((signature == PALET_BLEU || signature == PALET_VERT || signature == PALET_ROUGE) && bSignatureWasFounded(signature,nbSignatureFounded) == false)
-        {
-     
-          // Sinon, on continue la récupération des distances de chaques palets
-          
-            int u16objectX = pixy.blocks[j].x;
-            int u16objectWidth = pixy.blocks[j].width;
-            if(u16objectX <= PIXY_au16PixyMiddleInterval[0] && u16objectX >= PIXY_au16PixyMiddleInterval[1])
-            {
-              bObjectIsInFront = true;
-              MOTOR_vdStop(-1);
-              time_now = millis();
-            }
-            break;
-        }
-      }
-      
-      // Rehcerche du palet le plus proche terminée, on avance jusqu'a lui
-      else if(bSearchDistanceMin == false && bObjectIsInFront == false)
+      for (j=0; j<blocks; j++)
       {
-        if(signature == u8NearObject)
+        // Si la signature == Balle
+        if(pixy.blocks[j].signature == 1)
         {
-          int u16objectX = pixy.blocks[j].x;
-          int u16objectY = pixy.blocks[j].y;
-          vdTrackObject(u16objectX, u16objectY);
+          vdTrackObject(j, pixy.blocks[j].x , pixy.blocks[j].y, pixy.blocks[j].width, pixy.blocks[j].height);
         }
-        else
-          MOTOR_vdRotateRight(MOTOR_s32MotorSpeed);
       }
-    }
-  }    
-  
-  //Ce bloc est non bloquant, il sert a recuperer la distance dès que l'on est devant un palet
-  if(bObjectIsInFront == true)
+  }
+  else
   {
-    if(millis() > (time_now) + 1000)
-    {
+    MOTOR_s32MotorSpeedRotate = 170;
     
-      if(millis() > (time_now) + 2000)
-      {
-        bObjectIsInFront = false;
-      }
+    if(PIXY_u8LastDetectObject == LEFT)
+      MOTOR_vdRotateLeft(MOTOR_s32MotorSpeedRotate);
       
-      f32Distance = ULTRASON_f32GetDistance();
-     
-      if(signature == PALET_BLEU) Serial.print("PALET BLEU détécté, distance = ");
-      else if(signature == PALET_ROUGE) Serial.print("PALET ROUGE détécté, distance = ");
-      else if(signature == PALET_VERT) Serial.print("PALET VERT détécté, distance = ");
-      Serial.print(f32Distance);
-      Serial.println(" cm");
+    else if(PIXY_u8LastDetectObject == RIGHT)
+      MOTOR_vdRotateRight(MOTOR_s32MotorSpeedRotate);
       
-      u8foundedSignature[nbSignatureFounded++] = signature;
-    }
+    else if(PIXY_u8LastDetectObject == FRONT)
+      MOTOR_vdMoveForward(MOTOR_s32MotorSpeed , MOTOR_s32MotorSpeed);
+      
+    else
+      MOTOR_vdStop(-1);      
   }
 
-  /*
-  f32Distance = ULTRASON_f32GetDistance();
-              Serial.print("Objet Trouvé, distance = ");
-              Serial.println(f32Distance);
-  */
-  delay(30);
+  delay(50);
 }
